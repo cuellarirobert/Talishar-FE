@@ -163,15 +163,14 @@ const StickyFooter = ({
             </div>
           )}
         </div>
-        <div className={styles.footerAlarm}>
-          {!isValid && (
-            <div className={styles.alarm}>
-              <FaExclamationCircle /> {errorArray[0]}
-            </div>
-          )}
-        </div>
         <div className={styles.footerContent}>
-          <div>
+          <div className={styles.deckCount}>
+            {!isValid && errorArray.length > 0 && (
+              <span className={styles.deckErrorIcon}>
+                <FaExclamationCircle />
+                <span className={styles.deckErrorTooltip}>{errorArray[0]}</span>
+              </span>
+            )}
             Deck {values.deck.length}/{deckSize}
           </div>
         </div>
