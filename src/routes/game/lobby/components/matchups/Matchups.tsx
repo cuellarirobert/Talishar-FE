@@ -3,7 +3,7 @@ import { RootState } from 'app/Store';
 import { GAME_FORMAT } from 'appConstants';
 import { useJoinGameMutation } from 'features/api/apiSlice';
 import { getGameInfo } from 'features/game/GameSlice';
-import { Matchup } from 'interface/API/GetLobbyRefresh.php';
+import { Matchup, LegalHero } from 'interface/API/GetLobbyRefresh.php';
 import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
@@ -110,23 +110,40 @@ const Matchups = ({
     }
   };
 
-  // Lookup: hero ID -> hero entry (for ID-based matching)
-  const HERO_BY_ID = useMemo(() => {
-    const map = new Map<string, typeof HEROES_OF_RATHE[number]>();
-    for (const h of HEROES_OF_RATHE) map.set(h.value, h);
-    return map;
-  }, []);
-
-  // Lookup: lowercase hero label -> hero entry (for name-based matching, e.g. when
-  // Bazaar/Fabrary sends matchupId='arakni_huntsman' but name='Arakni Huntsman')
+  // Universe of all known heroes — used for resolveHero() so we can identify
+  // a saved matchup as hero-backed even when the hero is banned in the current
+  // format (e.g. Verdance saved against a CC deck → still recognized as a hero
+  // even though Verdance is a Living Legend banned in CC). Always sources from
+  // HEROES_OF_RATHE; backend's legalHeroes is layered on top to attach the
+  // class string when available.
   const HERO_BY_NAME = useMemo(() => {
-    const map = new Map<string, typeof HEROES_OF_RATHE[number]>();
-    for (const h of HEROES_OF_RATHE) map.set(h.label.toLowerCase(), h);
+    const map = new Map<string, { id: string; name: string; class: string }>();
+    for (const h of HEROES_OF_RATHE) {
+      map.set(h.label.toLowerCase(), { id: h.value, name: h.label, class: '' });
+    }
+    // Layer in backend data when present — gives us the class string and the
+    // slug-style id (vs. HEROES_OF_RATHE's card-ID style).
+    for (const h of gameLobby?.legalHeroes ?? []) {
+      map.set(h.name.toLowerCase(), { id: h.heroId, name: h.name, class: h.class });
+    }
     return map;
-  }, []);
+  }, [gameLobby?.legalHeroes]);
+
+  const HERO_BY_ID = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; class: string }>();
+    // Card-ID keyed (e.g. "DYN113")
+    for (const h of HEROES_OF_RATHE) {
+      map.set(h.value, { id: h.value, name: h.label, class: '' });
+    }
+    // Slug-keyed from backend (e.g. "arakni_huntsman") — overrides where present
+    for (const h of gameLobby?.legalHeroes ?? []) {
+      map.set(h.heroId, { id: h.heroId, name: h.name, class: h.class });
+    }
+    return map;
+  }, [gameLobby?.legalHeroes]);
 
   // Resolve a saved matchup to a hero entry if it conceptually targets one.
-  // First try matchupId (card ID), then the matchup's display name.
+  // First try matchupId (slug or card ID), then the matchup's display name.
   const resolveHero = (m: { matchupId: string; name?: string | null }) => {
     return (
       HERO_BY_ID.get(m.matchupId) ??
@@ -137,43 +154,104 @@ const Matchups = ({
 
   // Partition saved matchups into hero-backed (rendered as portrait) vs
   // custom-named (rendered as full-width button).
+  //
+  // When the backend provides `legalHeroes`, that list is authoritative —
+  // hero matchups for heroes NOT in the legal list (e.g. saved against a
+  // Living Legend then loaded into a CC deck) are dropped entirely. This
+  // protects against deckbuilders that don't validate format bans on their
+  // side. When the backend hasn't sent `legalHeroes`, all hero matchups
+  // are shown (no ban data available to filter on).
   const { savedHeroMatchups, customMatchups } = useMemo(() => {
-    const heroes: { hero: typeof HEROES_OF_RATHE[number]; matchup: Matchup }[] = [];
+    const heroes: { hero: { id: string; name: string; class: string }; matchup: Matchup }[] = [];
     const customs: Matchup[] = [];
+
+    const legalList = gameLobby?.legalHeroes;
+    const legalSet =
+      legalList && legalList.length > 0
+        ? new Set<string>([
+            ...legalList.map((h) => h.heroId),
+            ...legalList.map((h) => h.name.toLowerCase()),
+          ])
+        : null;
+
     for (const m of gameLobby?.matchups ?? []) {
       const hero = resolveHero(m);
-      if (hero) heroes.push({ hero, matchup: m });
-      else customs.push(m);
+      if (hero) {
+        if (legalSet) {
+          const isLegal =
+            legalSet.has(m.matchupId) ||
+            (m.name ? legalSet.has(m.name.toLowerCase()) : false);
+          if (!isLegal) continue; // banned hero in this format — drop entirely
+        }
+        heroes.push({ hero, matchup: m });
+      } else {
+        customs.push(m);
+      }
     }
     return { savedHeroMatchups: heroes, customMatchups: customs };
-  }, [gameLobby?.matchups, HERO_BY_ID, HERO_BY_NAME]);
+  }, [gameLobby?.matchups, gameLobby?.legalHeroes, HERO_BY_ID, HERO_BY_NAME]);
 
   // Format-legal heroes that AREN'T already saved (the discovery grid for Bazaar).
   // Non-Bazaar decks don't show this section at all.
+  // When the backend sent `legalHeroes`, that list is already ban-filtered and
+  // format-filtered. Otherwise we fall back to HEROES_OF_RATHE + young flag.
   const unsavedHeroes = useMemo(() => {
     if (!isBazaarDeck) return [];
+    const savedHeroIds = new Set(savedHeroMatchups.map((s) => s.hero.id));
+    const fromBackend = gameLobby?.legalHeroes;
+    if (fromBackend && fromBackend.length > 0) {
+      return fromBackend
+        .filter((h) => !savedHeroIds.has(h.heroId))
+        .map((h) => ({
+          matchupId: h.heroId,
+          name: h.name,
+          class: h.class,
+          preferredTurnOrder: null as string | null,
+          notes: null as string | null,
+          hasData: false,
+        }));
+    }
+    // Fallback: derive from FE constants (NO ban filter — heroes that are banned
+    // in the current format will incorrectly appear)
     const useYoung = format ? BLITZ_FORMATS.has(format) : false;
-    const savedHeroIds = new Set(savedHeroMatchups.map((s) => s.hero.value));
     return HEROES_OF_RATHE
       .filter((h) => !!h.young === useYoung)
       .filter((h) => !savedHeroIds.has(h.value))
       .map((h) => ({
         matchupId: h.value,
         name: h.label,
+        class: '',
         preferredTurnOrder: null as string | null,
         notes: null as string | null,
         hasData: false,
       }));
-  }, [format, savedHeroMatchups, isBazaarDeck]);
+  }, [format, savedHeroMatchups, isBazaarDeck, gameLobby?.legalHeroes]);
 
   const matchesSearch = (s: string) =>
     s.toLowerCase().includes(searchTerm.toLowerCase());
 
+  // When the opponent's hero is known, sort the saved hero matchups so the one
+  // targeting that hero is first (upper-left). Subsequent ordering is preserved.
+  const sortedSavedHeroMatchups = useMemo(() => {
+    const theirHero = gameLobby?.theirHero?.toLowerCase();
+    if (!theirHero || theirHero === 'cardback') return savedHeroMatchups;
+    const idx = savedHeroMatchups.findIndex(
+      ({ matchup, hero }) =>
+        matchup.matchupId.toLowerCase() === theirHero ||
+        hero.id.toLowerCase() === theirHero
+    );
+    if (idx <= 0) return savedHeroMatchups; // not found, or already first
+    const reordered = [...savedHeroMatchups];
+    const [match] = reordered.splice(idx, 1);
+    reordered.unshift(match);
+    return reordered;
+  }, [savedHeroMatchups, gameLobby?.theirHero]);
+
   const filteredSavedHeroMatchups = useMemo(
-    () => savedHeroMatchups.filter(({ matchup, hero }) =>
-      matchesSearch(matchup.name ?? hero.label)
+    () => sortedSavedHeroMatchups.filter(({ matchup, hero }) =>
+      matchesSearch(matchup.name ?? hero.name)
     ),
-    [savedHeroMatchups, searchTerm]
+    [sortedSavedHeroMatchups, searchTerm]
   );
 
   const filteredCustomMatchups = useMemo(
@@ -189,7 +267,10 @@ const Matchups = ({
   const groupedMatchups = useMemo(() => {
     const groups: Record<string, typeof filteredUnsavedHeroes> = {};
     for (const h of filteredUnsavedHeroes) {
-      const cls = getHeroClass(h.name);
+      // Prefer backend-supplied class; fall back to first-name HERO_CLASS_MAP
+      const cls = h.class
+        ? h.class.charAt(0) + h.class.slice(1).toLowerCase() // "RUNEBLADE" -> "Runeblade"
+        : getHeroClass(h.name);
       if (!groups[cls]) groups[cls] = [];
       groups[cls].push(h);
     }
@@ -244,8 +325,8 @@ const Matchups = ({
                         }}
                       >
                         <img
-                          src={generateCroppedImageUrl(hero.value)}
-                          alt={matchup.name ?? hero.label}
+                          src={generateCroppedImageUrl(hero.id)}
+                          alt={matchup.name ?? hero.name}
                           className={`${styles.portraitImg} ${styles.portraitImgHasData}`}
                           onError={(e) => {
                             (e.target as HTMLImageElement).style.opacity = '0';
@@ -253,7 +334,7 @@ const Matchups = ({
                         />
                         <div className={styles.portraitOverlay}>
                           <span className={styles.portraitName}>
-                            {matchup.name ?? hero.label}
+                            {matchup.name ?? hero.name}
                           </span>
                           {matchup.preferredTurnOrder && (
                             <span className={styles.turnOrderBadge}>
