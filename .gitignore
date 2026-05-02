@@ -51,3 +51,6 @@ yarn-error.log*
 THEME_IMPLEMENTATION_SUMMARY.md
 THEME_QUICKSTART.md
 THEME_SYSTEM.md
+
+# Playwright debug screenshots (scripts/*.mjs output, regeneratable)
+scripts/*.png
