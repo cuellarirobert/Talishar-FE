@@ -434,6 +434,7 @@ const Matchups = ({
           <NoDataPopover
             hero={noDataHero}
             onClose={() => setNoDataHero(null)}
+            deckLink={gameLobby?.myDeckLink}
           />,
           document.body
         )}
@@ -444,12 +445,29 @@ const Matchups = ({
 const POPOVER_WIDTH = 260;
 const POPOVER_GAP = 10;
 
+const FAB_BAZAAR_DECK_PREFIX = 'https://fabbazaar.app/decks/';
+
+const buildMatchupsLink = (deckLink: string | undefined): string | null => {
+  if (!deckLink) return null;
+  // FaB Bazaar exposes a /matchups subpath; deep-link straight there so the
+  // user lands on the matchup-config page for the hero they just clicked.
+  if (deckLink.startsWith(FAB_BAZAAR_DECK_PREFIX)) {
+    const trimmed = deckLink.split('?')[0].replace(/\/+$/, '');
+    return `${trimmed}/matchups`;
+  }
+  // Other deckbuilders: just open the deck page (we don't know if/where they
+  // expose a matchups view).
+  return deckLink;
+};
+
 const NoDataPopover = ({
   hero,
   onClose,
+  deckLink,
 }: {
   hero: { id: string; name: string; anchorRect: DOMRect };
   onClose: () => void;
+  deckLink?: string;
 }) => {
   const { anchorRect } = hero;
   const vw = window.innerWidth;
@@ -496,14 +514,32 @@ const NoDataPopover = ({
           No deck profile against <strong>{hero.name}</strong>. Save one in
           your deckbuilder to auto-apply sideboard adjustments.
         </p>
-        <a
-          href={FAB_BAZAAR_LEARN_MORE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={styles.noDataLearnLink}
-        >
-          Learn more ↗
-        </a>
+        {(() => {
+          const matchupsHref = buildMatchupsLink(deckLink);
+          if (matchupsHref) {
+            const isBazaar = matchupsHref.startsWith(FAB_BAZAAR_DECK_PREFIX);
+            return (
+              <a
+                href={matchupsHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={styles.noDataLearnLink}
+              >
+                {isBazaar ? 'Configure matchup ↗' : 'Open deck ↗'}
+              </a>
+            );
+          }
+          return (
+            <a
+              href={FAB_BAZAAR_LEARN_MORE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.noDataLearnLink}
+            >
+              Learn more ↗
+            </a>
+          );
+        })()}
       </div>
     </>
   );
